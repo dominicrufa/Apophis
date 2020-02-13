@@ -2,6 +2,7 @@
 
 #####Imports#####
 import numpy as np
+from scipy.special import logsumexp
 import copy
 from apophis.particles import Particle
 
@@ -16,7 +17,7 @@ class Resamplers(object):
         self.__dict__.update(kwargs)
 
     @staticmethod
-    def multinomial(particles, num_particles, **kwargs):
+    def multinomial(particles, num_resamples, num_initial_particles, **kwargs):
         """
         Particle multinomial resampler.
         This @staticmethod will take a list of Particles, resample them, and return a list of updated Particles
@@ -28,10 +29,10 @@ class Resamplers(object):
             resampled_particles : list of apophis.particles.Particle objects
                 resampled particles
         """
-        particle_weights = np.array([particle.weight for particle in particles])
+        particle_works = np.array([particle.work for particle in particles])
         mean_particle_weight = np.average(particle_weights)
-        normalized_weights = normalize(particle_weights)
-        resampled_indices = np.random.choice(len(particles), num_particles, p = normalized_weights, replace = True)
+        normalized_weights = normalize_works(particle_weights)
+        resampled_indices = np.random.choice(len(particles), num_resamples, p = normalized_weights, replace = True)
 
         updated_particles = Resamplers._update_particles(particles = particles, resampled_indices = resampled_indices, **kwargs)
 
@@ -61,19 +62,23 @@ class Resamplers(object):
             for current_idx, resampled_index in enumerate(resampled_indices[:len(particles)]):
                 particle_to_copy = copied_particles[resampled_index]
                 particles[current_idx].update_index(particle_to_copy.index)
-                particles[current_idx].update_configuration(particle_to_copy.configuration)
+                particles[current_idx].propagator = copy.deepcopy(particle_to_copy.propagator)
+                particles[current_idx].update_sampler_state(copy.deepcopy(particle_to_copy.sampler_state))
+                #we will update the propagator invariant later
 
             for resampled_index in resampled_indices[len(particles):]:
-                particle_to_copy = copied_particles[resampled_index]
-                particles.append(Particle(index = particle_to_copy.index, configuration = particle_to_copy.configuration))
+                particle_to_copy = copy.deepcopy(copied_particles[resampled_index])
+                particles.append(Particle(index = particle_to_copy.index, sampler_state = copy.deepcopy(particle_to_copy.sampler_state)))
+                #we will update the propagator invariant later
 
         else:
             for current_idx, resampled_index in resampled_indices:
                 particle_to_copy = copied_particles[resampled_index]
                 particles[current_idx].update_index(particle_to_copy.index)
-                particles[current_idx].update_configuration(particle_to_copy.configuration)
+                particles[current_idx].update_sampler_state(copy.deepcopy(particle_to_copy.sampler_state))
+                #we will update the propagator invariant later
 
-        del copied_particles
+        del copied_particles #'cuz who needs em, anyway?'
         return particles
 
 
@@ -82,16 +87,31 @@ class Resamplers(object):
 ### Utilities ###
 #################
 
-def normalize(vector):
+def normalize_works(works):
     """
-    simple utility function to normalize a vector
+    simple utility function to normalize an array of works
 
     args
-        vector : np.array
+        works : np.array of unnormalized -log weights
 
     returns
-        normalized_vector : np.array
+        normalized_weights : np.array
     """
-    Z = np.sum(vector)
-    normalized_vector = vector / Z
-    return normalized_vector
+    normalized_weights = np.exp(-1 * vector - logsumexp(-1 * vector))
+    return normalized_weight
+
+def average_work(works, num_initial_particles, **kwargs):
+    """
+    simple utility function to compute the average work of a work array
+
+    args
+        works : np.array
+            unnormalized -log weights
+        num_initial_particles : int
+            number of particles initialized
+
+    returns
+        average_work : float
+    """
+    average_work = -logsumexp(-works) + np.log(num_initial_particles)
+    return average_work

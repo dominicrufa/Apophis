@@ -9,35 +9,91 @@ class Particle(object):
 
     The Particle Object holds particle-specific information like ancestry, sampler_state, work, etc.
     """
-    def __init__(self, index = 0, sampler_state = None, work = 0, shadow_work = 0, propagator = None, **kwargs):
+    def __init__(self,
+                 index,
+                 iteration,
+                 target_invariant_thermodynamic_state,
+                 sampler_state,
+                 propagator,
+                 proposal_invariant_parameter_sequence,
+                 target_invariant_parameter_sequence,
+                 eta_0 = None
+                 **kwargs):
         """
-        Dummy init method to be overwritten.
+        Initialize a particle.
 
         args
             index : int
                 index label of particle
+            iteration : int
+                iteration of SMC particle
+            initial_work : float
+                the initial work of sampling the particle from eta_0
+                NOTE : this is always defined as gamma_0(x_0) / eta_0(x_0);
+                if the particle sampler state is sampled directly from gamma_0(x_0), then the initial work is identically 0.
+            target_invariant_thermodynamic_state : generalized thermodynamic state
+                thermodynamic_state that defines pi_0:n
+            initial_shadow_work : float, default 0
+                initial shadow work, defined as ln(K_k(x_(k-1), x_k) / L_(k-1)(x_k, x_k-1)), or the log ratio of the forward to (auxiliary) backward kernel densities
+                NOTE: this argument is exposed for resampling purposes; if initializing from the first iteration, there is no propagation;
+                thus, the initial shadow work should be 0, identically
             sampler_state : generalized sampler_state object
-                sampler_state of parameters
-            work : float
-                unnormalized work of particle
+                sampler_state
             propagator : generalized propagator object
-                propagates particle
+                propagates particle with a kernel K_n defined with an invariant pi_n;
+                is equipped with a thermodynamic state that is defined by rho_n, the proposal_thermostate
+            proposal_invariant_parameter_sequence : np.ndarray [n,m] or np.ndarray [1,m]
+                the parameter sequence defining rho_0:n;
+                n = number of sequential forward kernels K
+                m = dimension of parameters to define the proposal invariant thermostate,  rho_n
+            target_invariant_parameter_sequence : np.ndarray [n,l] or np.ndarray [1,l]
+                the paramter sequence defining pi_0:n
+                n = number of sequential target invariants
+                l = dimension of parameters to define the target invariant thermodynamic_states, pi_0:n
+            eta_0 : generalized thermodynamic state
+                the zeroth importance weight
+                (NOTE: eta_0:n ALWAYS appears in the importance weight; however, in the 0th iteration, there is no propagation, only an importance weight
+                    from eta_0 to gamma_0)
         """
-        self.index = index
-        self.work = work
+        #Define current iteration information
+        self._update_index(index)
+        self.iteration = iteration
+        #set target invariant
+        self.target_invariant_thermodynamic_state = target_invariant_thermodynamic_state
+        self.target_invariant_thermodynamic_state.set_parameters(target_invariant_parameter_sequence[self.iteration])
+        self.target_invariant_parameter_sequence = target_invariant_parameter_sequence
+        #set sampler_state
         self.sampler_state = sampler_state
-        self.propagator = propagator
-        self.shadow_work = shadow_work
+        #set propagator
+        self._update_propagator(propagator)
+        #set proposal_invariant
+        self.proposal_invariant_thermodynamic_state = self.propagator.thermodynamic_state
+        self.proposal_invariant_thermodynamic_state.set_parameters(proposal_invariant_parameter_sequence[self.iteration])
+        self.proposal_invariant_parameter_sequence = proposal_invariant_parameter_sequence
 
-        self.ancestry = []
-        self.sampler_states = []
-        self.works = [work]
-        self.shadow_works = [0] #initialize at zero because the first timestep does not have
+        #Define containers...
+        self.ancestry = [index]
+        self.sampler_states = [copy.deepcopy(sampler_state)]
+        self.works = []
+        self.shadow_works = [0] #initialize at zero because the first timestep does not have a propagation
+        #initial work:
+        if self.iteration == 0:
+            self.reduced_potential = self.target_invariant_thermodynamic_state.reduced_potential(self.sampler_state) #corresponding to gamma_(iteration)(x_iteration)
+            if eta_0 is not None:
+                initial_work = self.reduced_potential - eta_0.reduced_potential(self.sampler_state)
+            else:
+                #we will assume that the sampler stae
+                initial_work = 0.
+
+            self._update_work(initial_work)
+
+        else:
+            pass
 
         #update other kwargs that have not been set
         self.__dict__.update(kwargs)
 
-    def update_sampler_state(self, sampler_state, record_sampler_state_history = False, **kwargs):
+    def _update_sampler_state(self, sampler_state, record_sampler_state_history = False):
         """
         Wrapper method to update sampler_state
 
@@ -52,14 +108,7 @@ class Particle(object):
         if record_history:
             self.sampler_states.append(copy.deepcopy(self.sampler_state))
 
-    def update_propagator_invariant(self, invariant, **kwargs):
-        """
-        Wrapper method to update the invariant of the propagator
-        """
-        self.propagator.invariant = invariant
-
-
-    def update_index(self, index, record_index = True):
+    def _update_index(self, index, record_index = True):
         """
         Generalized method to update the ancestry of a particle
 
@@ -74,7 +123,7 @@ class Particle(object):
         if record_index:
             self.ancestry.append(index)
 
-    def append_work(self, incremental_work, record_work = True, **kwargs):
+    def _update_work(self, incremental_work, record_work = True):
         """
         Generalized method to update the work of a particle
 
@@ -84,17 +133,24 @@ class Particle(object):
             record_work : bool, default True
                 whether to record the work history
         """
-        self.work += incremental_work
+        if hasattr(self, 'work'):
+            self.work += incremental_work
+        else:
+            self.work = incremental_work
+
         if record_work:
             self.works.append(self.work)
 
-    def update_work(self, work, amend_work_history = True, **kwargs):
+
+    def _rectify_works(self, work, shadow_work, amend_work_histories = True, **kwargs):
         """
         Generalized method to amend the previous work of a particle (i.e. if we were to resample)
         """
         self.work = work
+        self.shadow_work = shadow_work
         if amend_work_history:
             self.works[-1] = work
+            self.shadow_works[-1] = shadow_work
 
 
     def propagate(self, num_iterations, update_sampler_state = True, record_shadow_work = True, **kwargs):
@@ -111,9 +167,9 @@ class Particle(object):
 
         if update_sampler_state:
             new_state = self.propagator.sampler_state
-            self.update_sampler_state(new_state, **kwargs)
+            self._update_sampler_state(new_state, **kwargs)
 
-    def update_propagator(self, propagator, reset_shadow_work = True):
+    def _update_propagator(self, propagator, reset_shadow_work = True):
         """
         Utility method to update the propagator and the sampler state of the propagator from self.sampler_state
 
@@ -126,7 +182,7 @@ class Particle(object):
 
         self.propagator = copy.deepcopy(propagator)
         self.propagator.sampler_state = self.sampler_state
-        self.propagator.thermodynamic_state = propagator.thermodynamic_state
+        self.propagator.thermodynamic_state = self.proposal_invariant_thermodynamic_state
         if reset_shadow_work:
             try:
                 self.propagator.reset_shadow_work() #reset the shadow work of the propagator
@@ -135,11 +191,12 @@ class Particle(object):
 
 
     def resample(self,
-                 resampling_particle = None,
-                 work = None,
-                 record_sampler_state_history = False, 
+                 resampling_particle,
+                 work,
+                 shadow_work,
+                 record_sampler_state_history = False,
                  reset_shadow_work = True,
-                 amend_work_history = True,
+                 amend_work_histories = True,
                  **kwargs):
         """
         Utility method to update the particle with the information of the resampled_particle
@@ -150,12 +207,29 @@ class Particle(object):
             work : float
                 updated work of the current self.particle
         """
-        self.update_index(resampling_particle.index, record_index = True)
-        self.update_sampler_state(copy.deepcopy(resampling_particle.sampler_state), record_sampler_state_history = record_sampler_state_history)
-        self.update_propagator(resampling_particle.propagator, reset_shadow_work = reset_shadow_work)
-        self.update_work(work = work, amend_work_history = True)
+        self._update_index(resampling_particle.index, record_index = True)
+        self._update_sampler_state(copy.deepcopy(resampling_particle.sampler_state), record_sampler_state_history = record_sampler_state_history)
+        self._update_propagator(resampling_particle.propagator, reset_shadow_work = reset_shadow_work)
+        self._rectify_work(work = work, shadow_work = shadow_work, amend_work_histories = amend_work_histories)
+        #and the target_invariant_thermodynamic_state is preserved
+        #the last thing we need to do is update the reduced potential
+        self.reduced_potential = resampling_particle.reduced_potential
 
+    def compute_incremental_work(self):
+        """
+        compute the incremental work as defined by u_n(x_n) - u_(n-1)(x_(n-1)) + ln(K_n(x_(n-1), x_n) / L_(n-1)(x_n, x_n-1))
 
+        returns
+            incremental_work : float
+                the incremental_work
+        """
+        new_reduced_potential = self.target_invariant_thermodynamic_state.reduced_potential(self.sampler_state)
+        old_reduced_potential = self.reduced_potential
+        potential_difference = new_reduced_potential - old_reduced_potential
+        incremental_shadow_work = self.shadow_works[-1] - self.shadow_works[-2]
+        incremental_work = potential_difference + incremental_shadow_work
+        self._update_work(incremental_work)
+        self.reduced_potential = new_reduced_potential #we have to update the reduced potential for the next iteration
 
 
 class OpenMMParticle(Particle):

@@ -8,246 +8,97 @@ import os
 
 # Instantiate logger
 logging.basicConfig(level = logging.NOTSET)
-_logger = logging.getLogger("sMC_utils")
+_logger = logging.getLogger("apophis")
 _logger.setLevel(logging.DEBUG)
 
 class SequentialMonteCarlo(object):
     """
-    Dummy super used to organize the algorithms and outline all of the necessary functionality that must be readily exposed.
+    Super;
     The generalized algorithm proceeds as follows:
 
-    Step 1: initialization-
-        set t = 1;
-        for i = 1, ..., N_n draw X_1^(i) ~ eta_1;
-        evaluate { w_1(X_1^(i)) } with gamma_1(X_1) / eta_1(X_1);
-        Iterate steps 2,3
-    Step 2: resample-
-        if O({W_n^(i), X_n^(i)}) exceeds some threshold T, resample particles and set W_n^(i) = 1/N_n
-    Step 3: sampling-
-        set n = n + 1; if n = p + 1 (i.e. the total sequence), stop;
-        for i = 1, ..., N_n draw X_n^(i) ~ K_n(X_(n - 1)^(i), .);
-        evaluate {w_n(X_(n - 1:n)^(i))} with equation --> w_n(x_(n - 1), x_n) = gamma_n(x_n) * L_(n - 1)(x_n, x_(n - 1)) / [gamma_(n - 1)(x_(n - 1)) * K_n(x_(n - 1), x_n)]
-        normalize works: W_n^(i) = W_(n - 1)^(i) * w_n(X_(n - 1 : n)^(i)) / sum_(N_n)[W_(n - 1)^(j) * w_n(X_(n - 1 : n))^(j)]
+        Step 1: initialization-
+            set n = 0;
+            for i = 1, ..., N_n draw X_0^(i) ~ eta_0;
+            evaluate { w_0(X_0^(i)) } with gamma_0(X_1) / eta_0(X_1);
+            Iterate steps 2,3
+        Step 2: resample-
+            if Obs({W_n^(i), X_n^(i)}) exceeds some threshold T, resample particles and set W_n^(i) = 1/N_n
+        Step 3: sampling-
+            set n = n + 1; if n = p + 1 (i.e. the total sequence), stop;
+            for i = 1, ..., N_n draw X_n^(i) ~ K_n(X_(n - 1)^(i), .);
+            evaluate {w_n(X_(n-1:n)^(i))} with equation --> w_n(x_(n-1), x_n) = gamma_n(x_n) * L_(n-1)(x_n, x_(n-1)) / [gamma_(n-1)(x_(n-1)) * K_n(x_(n-1), x_n)]
+            normalize works: W_n^(i) = W_(n-1)^(i) * w_n(X_(n-1 : n)^(i)) / sum_(N_n)[W_(n-1)^(j) * w_n(X_(n-1 : n))^(j)]
 
-    Note : There are many variations of this algorithm, so I will not explicitly hardcode a sequence of iterations of this algorithm, but instead provide methods with **kwargs to allow for interoperability and subclassing
+    Example:
+    >>> # Below, we initialize the SMC with a target_invariant_thermodynamic_state, it's apprpriate sequence of parameters, and a propagator.
+    >>> # However, the proposal invariant parameter sequence is undefined, so it defaults to the target_invariant_parameter_sequence.
+    >>> # Also, eta_0 is left undefined, so we cannot generate an initial sampler_state;
+    >>> # instead, we must define a sampler_state and propagate it w.r.t. the propagator defined at the 0th proposal_invariant_parameter_sequence,
+    >>> # which is (as mentioned above) defaulted to the 0th target_invariant_parameter_sequence
+    >>> smc = SequentialMonteCarlo(num_particles = 10,
+    ...                            target_invariant_thermodynamic_state = target_invariant_thermodynamic_state,
+    ...                            target_invariant_parameter_sequence = np.array([0., 0.2, 0.4, 0.6, 0.8, 1.0]),
+    ...                            propagator = propagator,
+    ...                            proposal_invariant_parameter_sequence = None,
+    ...                            seed_sampler_states = [sampler_state],
+    ...                            eta_0 = None
+    ...                            )
+
+    >>> smc.execute() #this executes the full protocol
+
     """
-    def __init__(self, invariant_sequence_parameters, termination_parameters, **kwargs):
-        """
-        Dummy __init__ method.
 
-        args
-            invariant_sequence_parameters : list
-                list of invariant-defining parameters
+    def __init__(self,
+                 num_particles,
+                 target_invariant_thermodynamic_state,
+                 target_invariant_parameter_sequence,
+                 propagator,
+                 proposal_invariant_parameter_sequence = None,
+                 seed_sampler_states = None,
+                 eta_0 = None,
+                 **kwargs):
+        """
+        Generalized SMC __init__ method.
+
+        arguments
+            num_particles : int
+                number of particles at 0th iteration
+            target_invariant_thermodynamic_state : apophis.thermostates.ThermodynamicState
+                thermodynamic state defining the target invariant distributions
+            target_invariant_parameter_sequence : np.ndarray [n,l] or np.ndarray [1,l]
+                the paramter sequence defining pi_0:n
+                n = number of sequential target invariants
+                l = dimension of parameters to define the target invariant thermodynamic_states, pi_0:n
+            propagator : apophis.propagators.Propagator
+                the propagator containing a proposal_invariant_thermodynamic_state (apophis.thermostates.ThermodynamicState)
+                and an apophis.sampler_states.SamplerState seed.
+            proposal_invariant_parameter_sequence : np.ndarray [n,m] or np.ndarray [1,m], default None
+                the parameter sequence defining rho_0:n;
+                n = number of sequential forward kernels K
+                m = dimension of parameters to define the proposal invariant thermostate,  rho_n
+            seed_sampler_states : list of apophis.sampler_states.SamplerState objects, default None
+                list of sampler states to give to each particle; if None, they will be generated internally
+            eta_0 : apophis.thermostates.ThermodynamicState, default None
+                thermodynamic_state from which a SamplerState is generated and applied to each particle.
+                If None, then the 0th entry of the proposal_invariant_parameter_sequence will parametrize the propagator proposal_invariant_thermodynamic_state
+                and generate sampler states accordingly
 
         attributes
-            invariant_sequence_parameters : list
-                list of invariant-defining parameters
-            termination_parameters : type(invariant_sequence_parameters[0])
-                termination parameters
-            iteration : 1
+            iteration : 0
                 first iteration
             kwargs : **kwargs
                 extra arguments
 
         """
         from apophis.particles import Particle
-        self.iteration = 1 # 0-indexed
+        self.iteration = 0 # 0-indexed
         self.invariant_sequence_parameters = invariant_sequence_parameters
         self.termination_parameters = termination_parameters
-        self.smc_init_locals = locals()
 
         #update other kwargs that have not been set
         self.__dict__.update(kwargs)
 
-    def resample(self, resampling_scheme, observable, num_resamples, threshold, **kwargs):
-        """
-        Generalized method to resample the particles with a given scheme, an observable, a threshold, and a number of particles to resample.
 
-        args
-            resampling_scheme : function or staticmethod
-                function defining the resampling strategy
-                NOTE : the scheme is designed to take a list of Particles, resample them, and return a list of updated Particles
-            observable : function
-                function defining the observable to be computed from self.particles
-            num_particles : int
-                number of particles to resample
-            threshold : float
-                a threshold for observable resampling;
-                resample = True if observable_value < threshold else False
-
-        attributes
-            particles : list of apophis.Particle objects
-        """
-        if observable(self.particles) < threshold_ceiling
-            resampled_particles = resampling_scheme(particles = particles)
-            self.particles = resampled_particles
-        else:
-            pass
-
-    def determine_num_resamples(self, **kwargs):
-        """
-        Given particle weights (and perhaps an observable), determine the number of particles to resample
-
-        args
-
-        returns
-            num_resamples : int, default len(num_particles)
-                the number of particles that will be resampled
-        """
-        return len(self.particles)
-
-    def update_particle_works(self, **kwargs):
-        """
-        Generalized method to compute and update works for all of the particles
-        """
-        pass
-
-    def propagate_particles(self, propagator, **kwargs):
-        """
-        Generalized method to update Particles with the forward propagator K_n(x_(n-1), x_n) and (possibly) compute the kernel density
-
-        args
-            propagator : generalized propagator object
-
-        returns
-            kernel_densities : np.array
-                list of kernel densities associated with the particles
-        """
-        kernel_densities = []
-        for particle in self.particles:
-            updated_sampler_state, kernel_density = propagator.propagate(sampler_state = particle.sampler_state, **kwargs)
-            kernel_densities.append(kernel_density)
-            particle.update_sampler_state(sampler_state = updated_sampler_state, **kwargs)
-
-        return np.array(kernel_densities)
-
-    def update_propagator(self, particle, propagator_invariant = None, sampler, move_type, **kwargs):
-        """
-        Generate a propagator from a sampler object and a invariant_object
-        """
-        if particle.propagator is None:
-            move = move_type(**kwargs)
-            propagator = sampler(propagator_invariant, particle.sampler_state, move = move)
-            particle.propagator = propagator
-
-        else:
-            # the propagator invariant points from the propagator invariant
-            pass
-
-    def update_invariant(self, invariant, parameters, **kwargs):
-        """
-        Define an updated invariant with some lambda parameters
-
-        args
-            parameters : float or np array
-                lambda parameters defining thermodynamics state
-            invariant : generalized invariant object
-
-        returns
-            updated_invariant : generalized invariant object
-                updated
-        """
-        updated_invariant = invariant.update(parameters)
-        return updated_invariant
-
-    def generate_backward_propagator(self, **kwargs):
-        """
-        the backward propagator defines an auxiliary invariant
-        which is never explicitly computed
-        """
-        pass
-
-    def generate_iid_sample(self, invariant):
-        pass
-
-    def determine_next_invariant(self, current_invariant, observable = nESS, query_function = binary_search, threshold_floor = None, threshold_ceiling = None, **kwargs):
-        """
-        Determine the next parameters that must be used to update the invariant distribution.
-        First, check if there is a method attribute called 'invariant_sequence_parameters' that is iterable.
-        If so, we use the 'iteration' attribute to call the next invariant.
-        If 'invariant_sequence_parameters' is not defined, we will call the observable function
-        and use the 'particles' to compute an observable.  The next invariant is chosen such that its
-        particle observable is equal to the threshold_floor xor threshold_ceiling
-
-        Note : the query function may not be suitable if the object(s) parametrizing
-        the next observable is > 1 dimensional (and continuous)...
-
-        args
-            current_invariant : generalized invariant object
-            observable : function
-                function defining the observable to be computed from self.particles
-            threshold_ceiling : float, default 1.
-                generalized threshold maximum of the observable to trigger resampling
-            threshold_floor : float, default None
-                generalized threshold minimum of the observable to trigger resampling
-
-        returns
-            updated_invariant : generalized invariant object
-        """
-        if (threshold_ceiling is None and threshold_floor is None) or (threshold_ceiling is not None and threshold_floor is not None):
-            raise Exception(f"exactly one (threshold_floor, threshold_ceiling) must be not None")
-
-        try:
-            updated_parameters = self.invariant_sequence_parameters[self.iteration] #since python is zero-indexed but
-            updated_invariant = self.update_invariant(invariant, updated_parameters)
-        except Exception as e:
-            if (threshold_ceiling is None and threshold_floor is None) or (threshold_ceiling is not None and threshold_floor is not None):
-                raise Exception(f"exactly one (threshold_floor, threshold_ceiling) must be not None")
-            assert observable is not None, f"the 'invariant_sequence' is undefined and there is no observable to threshold invariant parameter updates"
-            updated_parameters = query_function(observable = observable,
-                                                invariant = invariant,
-                                                particles = self.particles,
-                                                threshold = threshold_ceiling,
-                                                start_parameters = self.invariant_sequence_parameters[self.iteration - 1],
-                                                end_parameters = self.termination_parameters,
-                                                **kwargs)
-
-
-
-
-
-    def execute(self, num_initial_particles, **kwargs):
-        """
-        Algorithm executor.
-        """
-        #then iterate
-        while True:
-            target_t = self.generate_target_invariant(**kwargs)
-            if self.iteration == 0: #the only exception occurs in the initialization
-                #first, we have to define a target invariant defined at iteration 1
-                self.particles = list()
-                if sample_gamma_1:
-                    initial_target = target_t
-                else:
-                    initial_target = self.generate_invariant(**kwargs)
-
-                #then define the propagator whose invariant is eta_1 and propagate until num_particles i.i.d. samples are rendered
-                propagator = self.generate_propagator(sampler = sampler, invariant_object = initial_target, **kwargs)
-
-                for particle_index in range(len(num_initial_particles)):
-                    updated_sampler_state, kernel_density = propagator.propagate(**kwargs)
-                    work = 0. if sample_gamma_1 else gamma_1.reduced_potential(update_sampler_state) - initial_target.reduced_potential(updated_sampler_state)
-                    self.particles.append(Particle(index = particle_index, sampler_state = updated_sampler_state, work = work))
-
-            else:
-                pass
-
-            #then attempt to resample
-            num_resamples = self.determine_num_resamples(**kwargs)
-            self.resample(num_resamples)
-
-            #then propagate
-            propagator = self.generate_propagator()
-            kernel_densities = self.propagate_particles(propagator, **kwargs)
-
-            #then compute weights
-            self.update_incremental_works(kernel_densities, target_t, target_t_1)
-
-            target_t_1 = target_t #previous target
-            self.iteration += 1
-            terminate = self.inquire_termination()
-            if terminate:
-                break
 
 class OpenMMLayer(SequentialMonteCarlo):
     """

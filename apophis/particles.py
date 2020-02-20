@@ -215,10 +215,13 @@ class Particle(object):
         #the last thing we need to do is update the reduced potential
         self.reduced_potential = resampling_particle.reduced_potential
 
-    def compute_incremental_work(self):
+    def compute_incremental_work(self, update_particle = True, **kwargs):
         """
         compute the incremental work as defined by u_n(x_n) - u_(n-1)(x_(n-1)) + ln(K_n(x_(n-1), x_n) / L_(n-1)(x_n, x_n-1))
-
+        args
+            update_particle : bool, default True
+                whether to update the particle with the computed incremental work internally;
+                if True, this will call _update_work AND set the new reduced_potential
         returns
             incremental_work : float
                 the incremental_work
@@ -228,8 +231,13 @@ class Particle(object):
         potential_difference = new_reduced_potential - old_reduced_potential
         incremental_shadow_work = self.shadow_works[-1] - self.shadow_works[-2]
         incremental_work = potential_difference + incremental_shadow_work
-        self._update_work(incremental_work)
-        self.reduced_potential = new_reduced_potential #we have to update the reduced potential for the next iteration
+        if update_particle:
+            self._update_work(incremental_work)
+            self.reduced_potential = new_reduced_potential #we have to update the reduced potential for the next iteration
+        else:
+            pass
+
+        return incremental_work 
 
 
 class OpenMMParticle(Particle):
